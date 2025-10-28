@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visualisasi COVID-19 Indonesia</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://d3js.org/d3-scale-chromatic.v1.min.js"></script>
+    <script src="https://unpkg.com/topojson@3"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: #f9f9f9;
+            border-radius: 5px;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+        }
+        label {
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #555;
+        }
+        select, input {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .chart-container {
+            margin-bottom: 30px;
+        }
+        .chart-title {
+            font-size: 18px;
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #333;
+        }
+        .tooltip {
+            position: absolute;
+            background-color: rgba(255, 255, 255, 0.9);
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            pointer-events: none;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }
+        .legend {
+            font-size: 12px;
+        }
+        .province-path {
+            stroke: #fff;
+            stroke-width: 0.5px;
+        }
+        .province-path:hover {
+            stroke-width: 1.5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Visualisasi Data COVID-19 Indonesia</h1>
+        
+        <div class="controls">
+            <div class="control-group">
+                <label for="province-select">Pilih Provinsi:</label>
+                <select id="province-select">
+                    <option value="all">Semua Provinsi</option>
+                    <!-- Options akan diisi oleh JavaScript -->
+                </select>
+            </div>
+            
+            <div class="control-group">
+                <label for="metric-select">Metrik:</label>
+                <select id="metric-select">
+                    <option value="New Cases">Kasus Baru</option>
+                    <option value="Total Cases">Total Kasus</option>
+                    <option value="New Deaths">Kematian Baru</option>
+                    <option value="Total Deaths">Total Kematian</option>
+                    <option value="Total Recovered">Total Sembuh</option>
+                </select>
+            </div>
+            
+            <div class="control-group">
+                <label for="date-range">Rentang Tanggal:</label>
+                <input type="range" id="date-range" min="0" max="100" value="100">
+                <div id="date-display">Tanggal: </div>
+            </div>
+        </div>
+        
+        <div class="chart-container">
+            <div class="chart-title">Perkembangan Kasus COVID-19</div>
+            <div id="line-chart"></div>
+        </div>
+        
+        <div class="chart-container">
+            <div class="chart-title">Peta Sebaran COVID-19 di Indonesia</div>
+            <div id="map-chart"></div>
+        </div>
+        
+        <div class="chart-container">
+            <div class="chart-title">Kasus Harian per Provinsi</div>
+            <div id="bar-chart"></div>
+        </div>
+    </div>
+
+    <script>
+        // Variabel global untuk menyimpan data
+        let covidData = [];
+        let allDates = [];
+        let provinces = [];
+        let currentDateIndex = 0;
+        
+        // Dimensi chart
+        const margin = { top: 20, right: 30, bottom: 40, left: 60 };
+        const width = 900 - margin.left - margin.right;
+        const height = 400 - margin.top - margin.bottom;
+        
+        // Warna untuk provinsi
+        const colorScale = d3.scaleSequential(d3.interpolateBlues)
+            .domain([0, 1]); // Akan diupdate berdasarkan data
+        
+        // Tooltip
+        const tooltip = d3.select("body").append("div")
+            .attr("class", "tooltip")
+            .style("opacity", 0);
+        
+        // Load data CSV
+        d3.csv("covid_19_indonesia_time_series_all.csv").then(function(data) {
+            // Parsing data
+            covidData = data.map(d => {
+                // Parse tanggal
+                const dateParts = d.Date.split('/');
+                const date = new Date(`20${dateParts[2]}`, dateParts[0] - 1, dateParts[1]);
+                
+                return {
+                    date: date,
+                    dateString: d.Date,
+                    location: d.Location,
+                    province: d.Province,
+                    newCases: +d['New Cases'] || 0,
+                    newDeaths: +d['New Deaths'] || 0,
+                    totalCases: +d['Total Cases'] || 0,
+                    totalDeaths: +d['Total Deaths'] || 0,
+                    totalRecovered: +d['Total Recovered'] || 0,
+                    locationLevel: d['Location Level']
+                };
+            });
+            
+            // Filter hanya data provinsi (tidak termasuk data nasional)
+            const provinceData = covidData.filter(d => d.locationLevel === 'Province');
+            
+            // Dapatkan semua tanggal unik
+            allDates = [...new Set(provinceData.map(d => d.dateString))].sort((a, b) => {
+                const dateA = new Date(a.split('/')[2], a.split('/')[0] - 1, a.split('/')[1]);
+                const dateB = new Date(b.split('/')[2], b.split('/')[0] - 1, b.split('/')[1]);
+                return dateA - dateB;
+            });
+            
+            // Dapatkan semua provinsi unik
+            provinces = [...new Set(provinceData.map(d => d.province))].filter(p => p);
+            
+            // Update UI
+            updateProvinceSelect();
+            updateDateRange();
+            
+            // Inisialisasi visualisasi
+            initLineChart();
+            initBarChart();
+            initMap();
+            
+            // Event listeners
+            document.getElementById('province-select').addEventListener('change', updateCharts);
+            document.getElementById('metric-select').addEventListener('change', updateCharts);
+            document.getElementById('date-range').addEventListener('input', updateDateDisplay);
+        }).catch(function(error) {
+            console.error("Error loading data:", error);
+        });
+        
+        function updateProvinceSelect() {
+            const select = d3.select('#province-select');
+            select.selectAll('option:not(:first-child)').remove();
+            
+            const options = select.selectAll('option.province-option')
+                .data(provinces);
+                
+            options.enter()
+                .append('option')
+                .attr('class', 'province-option')
+                .attr('value', d => d)
+                .text(d => d);
+        }
+        
+        function updateDateRange() {
+            const dateRange = d3.select('#date-range');
+            dateRange.attr('max', allDates.length - 1);
+            currentDateIndex = allDates.length - 1;
+            updateDateDisplay();
+        }
+        
+        function updateDateDisplay() {
+            const slider = document.getElementById('date-range');
+            currentDateIndex = parseInt(slider.value);
+            const currentDate = allDates[currentDateIndex];
+            document.getElementById('date-display').textContent = `Tanggal: ${currentDate}`;
+            updateCharts();
+        }
+        
+        function initLineChart() {
+            const svg = d3.select('#line-chart')
+                .append('svg')
+                .attr('width', width + margin.left + margin.right)
+                .attr('height', height + margin.top + margin.bottom)
+                .append('g')
+                .attr('transform', `translate(${margin.left},${margin.top})`);
+        }
+        
+        function initBarChart() {
+            const svg = d3.select('#bar-chart')
+                .append('svg')
+                .attr('width', width + margin.left + margin.right)
+                .attr('height', height + margin.top + margin.bottom)
+                .append('g')
+                .attr('transform', `translate(${margin.left},${margin.top})`);
+        }
+        
+        function initMap() {
+            const svg = d3.select('#map-chart')
+                .append('svg')
+                .attr('width', width + margin.left + margin.right)
+                .attr('height', height + margin.top + margin.bottom)
+                .append('g')
+                .attr('transform', `translate(${margin.left},${margin.top})`);
+                
+            // Load peta Indonesia
+            d3.json("https://raw.githubusercontent.com/superpikar/indonesia-geojson/master/indonesia-province-simple.json").then(function(geoData) {
+                drawMap(geoData);
+            }).catch(function(error) {
+                console.error("Error loading map data:", error);
+                // Fallback: buat placeholder jika peta tidak tersedia
+                d3.select('#map-chart svg g')
+                    .append('text')
+                    .attr('x', width / 2)
+                    .attr('y', height / 2)
+                    .attr('text-anchor', 'middle')
+                    .text('Peta tidak tersedia. Silakan coba lagi nanti.');
+            });
+        }
+        
+        function drawMap(geoData) {
+            const svg = d3.select('#map-chart svg g');
+            
+            // Hitung total kasus per provinsi pada tanggal terpilih
+            const currentDate = allDates[currentDateIndex];
+            const provinceTotals = {};
+            
+            provinces.forEach(province => {
+                const provinceData = covidData.filter(d => 
+                    d.province === province && d.dateString === currentDate
+                );
+                if (provinceData.length > 0) {
+                    provinceTotals[province] = provinceData[0].totalCases;
+                } else {
+                    provinceTotals[province] = 0;
+                }
+            });
+            
+            // Update domain color scale
+            const maxCases = d3.max(Object.values(provinceTotals));
+            colorScale.domain([0, maxCases]);
+            
+            // Buat projection untuk peta Indonesia
+            const projection = d3.geoMercator()
+                .center([118, -2])
+                .scale(900)
+                .translate([width / 2, height / 2]);
+                
+            const path = d3.geoPath().projection(projection);
+            
+            // Draw provinces
+            svg.selectAll('.province-path')
+                .data(geoData.features)
+                .enter()
+                .append('path')
+                .attr('class', 'province-path')
+                .attr('d', path)
+                .attr('fill', d => {
+                    const provinceName = d.properties.state;
+                    const cases = provinceTotals[provinceName] || 0;
+                    return colorScale(cases);
+                })
+                .on('mouseover', function(event, d) {
+                    const provinceName = d.properties.state;
+                    const cases = provinceTotals[provinceName] || 0;
+                    
+                    tooltip.transition()
+                        .duration(200)
+                        .style('opacity', .9);
+                    tooltip.html(`<strong>${provinceName}</strong><br/>Total Kasus: ${cases}`)
+                        .style('left', (event.pageX + 10) + 'px')
+                        .style('top', (event.pageY - 28) + 'px');
+                        
+                    d3.select(this).style('stroke', '#333');
+                })
+                .on('mouseout', function() {
+                    tooltip.transition()
+                        .duration(500)
+                        .style('opacity', 0);
+                        
+                    d3.select(this).style('stroke', '#fff');
+                });
+                
+            // Add legend
+            const legend = svg.append('g')
+                .attr('class', 'legend')
+                .attr('transform', `translate(${width - 150}, 20)`);
+                
+            const legendScale = d3.scaleLinear()
+                .domain([0, maxCases])
+                .range([0, 100]);
+                
+            const legendAxis = d3.axisRight(legendScale)
+                .ticks(5)
+                .tickFormat(d3.format(',.0f'));
+                
+            legend.append('g')
+                .call(legendAxis);
+                
+            const defs = svg.append('defs');
+            const linearGradient = defs.append('linearGradient')
+                .attr('id', 'linear-gradient')
+                .attr('x1', '0%')
+                .attr('y1', '0%')
+                .attr('x2', '0%')
+                .attr('y2', '100%');
+                
+            linearGradient.selectAll('stop')
+                .data(colorScale.ticks().map((t, i, n) => ({
+                    offset: `${100 * i / n.length}%`,
+                    color: colorScale(t)
+                })))
+                .enter().append('stop')
+                .attr('offset', d => d.offset)
+                .attr('stop-color', d => d.color);
+                
+            legend.append('rect')
+                .attr('width', 20)
+                .attr('height', 100)
+                .style('fill', 'url(#linear-gradient)');
+                
+            legend.append('text')
+                .attr('x', -10)
+                .attr('y', -10)
+                .text('Total Kasus');
+        }
+        
+        function updateCharts() {
+            updateLineChart();
+            updateBarChart();
+            // Untuk peta, kita reload data untuk tanggal terpilih
+            d3.json("https://raw.githubusercontent.com/superpikar/indonesia-geojson/master/indonesia-province-simple.json").then(function(geoData) {
+                d3.select('#map-chart svg g').selectAll('*').remove();
+                drawMap(geoData);
+            });
+        }
+        
+        function updateLineChart() {
+            const selectedProvince = document.getElementById('province-select').value;
+            const selectedMetric = document.getElementById('metric-select').value;
+            
+            // Filter data berdasarkan provinsi yang dipilih
+            let filteredData;
+            if (selectedProvince === 'all') {
+                // Gabungkan data untuk semua provinsi (hitung total per tanggal)
+                const dateGroups = d3.group(covidData.filter(d => d.locationLevel === 'Province'), d => d.dateString);
+                filteredData = Array.from(dateGroups, ([date, values]) => {
+                    return {
+                        dateString: date,
+                        date: values[0].date,
+                        value: d3.sum(values, d => {
+                            switch(selectedMetric) {
+                                case 'New Cases': return d.newCases;
+                                case 'Total Cases': return d.totalCases;
+                                case 'New Deaths': return d.newDeaths;
+                                case 'Total Deaths': return d.totalDeaths;
+                                case 'Total Recovered': return d.totalRecovered;
+                                default: return d.newCases;
+                            }
+                        })
+                    };
+                }).sort((a, b) => a.date - b.date);
+            } else {
+                // Data untuk provinsi tertentu
+                filteredData = covidData.filter(d => 
+                    d.province === selectedProvince && d.locationLevel === 'Province'
+                ).sort((a, b) => a.date - b.date);
+            }
+            
+            // Clear chart sebelumnya
+            d3.select('#line-chart svg g').selectAll('*').remove();
+            
+            // Buat skala
+            const xScale = d3.scaleTime()
+                .domain(d3.extent(filteredData, d => d.date))
+                .range([0, width]);
+                
+            const yScale = d3.scaleLinear()
+                .domain([0, d3.max(filteredData, d => {
+                    if (selectedProvince === 'all') return d.value;
+                    switch(selectedMetric) {
+                        case 'New Cases': return d.newCases;
+                        case 'Total Cases': return d.totalCases;
+                        case 'New Deaths': return d.newDeaths;
+                        case 'Total Deaths': return d.totalDeaths;
+                        case 'Total Recovered': return d.totalRecovered;
+                        default: return d.newCases;
+                    }
+                })])
+                .range([height, 0]);
+                
+            // Buat garis
+            const line = d3.line()
+                .x(d => xScale(d.date))
+                .y(d => {
+                    if (selectedProvince === 'all') return yScale(d.value);
+                    switch(selectedMetric) {
+                        case 'New Cases': return yScale(d.newCases);
+                        case 'Total Cases': return yScale(d.totalCases);
+                        case 'New Deaths': return yScale(d.newDeaths);
+                        case 'Total Deaths': return yScale(d.totalDeaths);
+                        case 'Total Recovered': return yScale(d.totalRecovered);
+                        default: return yScale(d.newCases);
+                    }
+                });
+                
+            // Tambahkan garis ke chart
+            d3.select('#line-chart svg g')
+                .append('path')
+                .datum(filteredData)
+                .attr('fill', 'none')
+                .attr('stroke', 'steelblue')
+                .attr('stroke-width', 2)
+                .attr('d', line);
+                
+            // Tambahkan sumbu
+            const xAxis = d3.axisBottom(xScale);
+            const yAxis = d3.axisLeft(yScale);
+            
+            d3.select('#line-chart svg g')
+                .append('g')
+                .attr('transform', `translate(0, ${height})`)
+                .call(xAxis);
+                
+            d3.select('#line-chart svg g')
+                .append('g')
+                .call(yAxis);
+                
+            // Tambahkan judul sumbu
+            d3.select('#line-chart svg g')
+                .append('text')
+                .attr('transform', 'rotate(-90)')
+                .attr('y', 0 - margin.left)
+                .attr('x', 0 - (height / 2))
+                .attr('dy', '1em')
+                .style('text-anchor', 'middle')
+                .text(selectedMetric);
+                
+            d3.select('#line-chart svg g')
+                .append('text')
+                .attr('transform', `translate(${width / 2}, ${height + margin.bottom - 5})`)
+                .style('text-anchor', 'middle')
+                .text('Tanggal');
+        }
+        
+        function updateBarChart() {
+            const currentDate = allDates[currentDateIndex];
+            const selectedMetric = document.getElementById('metric-select').value;
+            
+            // Ambil data untuk tanggal terpilih
+            const dateData = covidData.filter(d => 
+                d.dateString === currentDate && d.locationLevel === 'Province'
+            );
+            
+            // Urutkan berdasarkan metrik terpilih
+            const sortedData = dateData.sort((a, b) => {
+                let aValue, bValue;
+                switch(selectedMetric) {
+                    case 'New Cases': 
+                        aValue = a.newCases;
+                        bValue = b.newCases;
+                        break;
+                    case 'Total Cases': 
+                        aValue = a.totalCases;
+                        bValue = b.totalCases;
+                        break;
+                    case 'New Deaths': 
+                        aValue = a.newDeaths;
+                        bValue = b.newDeaths;
+                        break;
+                    case 'Total Deaths': 
+                        aValue = a.totalDeaths;
+                        bValue = b.totalDeaths;
+                        break;
+                    case 'Total Recovered': 
+                        aValue = a.totalRecovered;
+                        bValue = b.totalRecovered;
+                        break;
+                    default: 
+                        aValue = a.newCases;
+                        bValue = b.newCases;
+                }
+                return bValue - aValue;
+            }).slice(0, 10); // Ambil 10 provinsi teratas
+            
+            // Clear chart sebelumnya
+            d3.select('#bar-chart svg g').selectAll('*').remove();
+            
+            // Buat skala
+            const xScale = d3.scaleBand()
+                .domain(sortedData.map(d => d.province))
+                .range([0, width])
+                .padding(0.1);
+                
+            const yScale = d3.scaleLinear()
+                .domain([0, d3.max(sortedData, d => {
+                    switch(selectedMetric) {
+                        case 'New Cases': return d.newCases;
+                        case 'Total Cases': return d.totalCases;
+                        case 'New Deaths': return d.newDeaths;
+                        case 'Total Deaths': return d.totalDeaths;
+                        case 'Total Recovered': return d.totalRecovered;
+                        default: return d.newCases;
+                    }
+                })])
+                .range([height, 0]);
+                
+            // Tambahkan bar
+            d3.select('#bar-chart svg g')
+                .selectAll('.bar')
+                .data(sortedData)
+                .enter()
+                .append('rect')
+                .attr('class', 'bar')
+                .attr('x', d => xScale(d.province))
+                .attr('y', d => {
+                    switch(selectedMetric) {
+                        case 'New Cases': return yScale(d.newCases);
+                        case 'Total Cases': return yScale(d.totalCases);
+                        case 'New Deaths': return yScale(d.newDeaths);
+                        case 'Total Deaths': return yScale(d.totalDeaths);
+                        case 'Total Recovered': return yScale(d.totalRecovered);
+                        default: return yScale(d.newCases);
+                    }
+                })
+                .attr('width', xScale.bandwidth())
+                .attr('height', d => {
+                    switch(selectedMetric) {
+                        case 'New Cases': return height - yScale(d.newCases);
+                        case 'Total Cases': return height - yScale(d.totalCases);
+                        case 'New Deaths': return height - yScale(d.newDeaths);
+                        case 'Total Deaths': return height - yScale(d.totalDeaths);
+                        case 'Total Recovered': return height - yScale(d.totalRecovered);
+                        default: return height - yScale(d.newCases);
+                    }
+                })
+                .attr('fill', 'steelblue')
+                .on('mouseover', function(event, d) {
+                    let value;
+                    switch(selectedMetric) {
+                        case 'New Cases': value = d.newCases; break;
+                        case 'Total Cases': value = d.totalCases; break;
+                        case 'New Deaths': value = d.newDeaths; break;
+                        case 'Total Deaths': value = d.totalDeaths; break;
+                        case 'Total Recovered': value = d.totalRecovered; break;
+                        default: value = d.newCases;
+                    }
+                    
+                    tooltip.transition()
+                        .duration(200)
+                        .style('opacity', .9);
+                    tooltip.html(`<strong>${d.province}</strong><br/>${selectedMetric}: ${value}`)
+                        .style('left', (event.pageX + 10) + 'px')
+                        .style('top', (event.pageY - 28) + 'px');
+                })
+                .on('mouseout', function() {
+                    tooltip.transition()
+                        .duration(500)
+                        .style('opacity', 0);
+                });
+                
+            // Tambahkan sumbu
+            const xAxis = d3.axisBottom(xScale);
+            const yAxis = d3.axisLeft(yScale);
+            
+            d3.select('#bar-chart svg g')
+                .append('g')
+                .attr('transform', `translate(0, ${height})`)
+                .call(xAxis)
+                .selectAll('text')
+                .attr('transform', 'rotate(-45)')
+                .style('text-anchor', 'end');
+                
+            d3.select('#bar-chart svg g')
+                .append('g')
+                .call(yAxis);
+                
+            // Tambahkan judul sumbu
+            d3.select('#bar-chart svg g')
+                .append('text')
+                .attr('transform', 'rotate(-90)')
+                .attr('y', 0 - margin.left)
+                .attr('x', 0 - (height / 2))
+                .attr('dy', '1em')
+                .style('text-anchor', 'middle')
+                .text(selectedMetric);
+        }
+    </script>
+</body>
+</html>
